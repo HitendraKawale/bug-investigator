@@ -23,6 +23,26 @@ from bug_investigator.schemas import FinalReport
 from bug_investigator.state import InvestigationState
 
 
+def _normalize_patch_plan(value):
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        return {"steps": value}
+    return {"raw": value}
+
+
+def _normalize_root_cause(value):
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        return {"items": value}
+    return {"raw": value}
+
+
 def build_graph(ctx: AgentContext):
     triage_agent = TriageAgent(ctx)
     log_agent = LogAnalystAgent(ctx)
@@ -74,11 +94,18 @@ def build_graph(ctx: AgentContext):
         repro_exec = state.get("repro_exec") or {}
         fix_plan = state.get("fix_plan") or {}
 
+        normalized_root_cause = _normalize_root_cause(
+            fix_plan.get("root_cause_hypothesis")
+        )
+        normalized_patch_plan = _normalize_patch_plan(
+            fix_plan.get("patch_plan")
+        )
+
         completed = (
             review.get("approved") is True
             and review.get("verdict") == "approve"
             and repro_exec.get("matched_expected_signature") is True
-            and bool(fix_plan)
+            and bool(normalized_patch_plan)
         )
 
         status = "completed" if completed else "partial"
@@ -98,8 +125,8 @@ def build_graph(ctx: AgentContext):
                 **(state.get("repro") or {}),
                 **({"execution": state.get("repro_exec")} if state.get("repro_exec") else {}),
             },
-            root_cause=(state.get("fix_plan") or {}).get("root_cause_hypothesis"),
-            patch_plan=(state.get("fix_plan") or {}).get("patch_plan"),
+            root_cause=normalized_root_cause,
+            patch_plan=normalized_patch_plan,
             review_verdict=state.get("review"),
             evidence=state.get("evidence_registry", []),
             open_questions=state.get("open_questions", []),
