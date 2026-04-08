@@ -17,6 +17,7 @@ Return strict JSON with:
 
 Create the smallest deterministic Python repro.
 Only return Python code in script_text. Do not include markdown fences.
+Assume the repo path bootstrap will be injected automatically.
 """
 
 
@@ -33,6 +34,29 @@ def _strip_code_fences(text: str) -> str:
     return text.strip()
 
 
+def _bootstrap_header(repo_path: str) -> str:
+    repo_abs = str(Path(repo_path).resolve())
+    return f"""from pathlib import Path
+import sys
+
+REPO_ROOT = Path(r"{repo_abs}").resolve()
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+"""
+
+
+def _ensure_bootstrap(script_text: str, repo_path: str) -> str:
+    header = _bootstrap_header(repo_path)
+    text = script_text.lstrip()
+
+    # If model already inserted equivalent bootstrap, keep as-is.
+    if "sys.path.insert(0" in text or "REPO_ROOT" in text:
+        return text
+
+    return header + text
+
+
 class ReproductionAgent(BaseAgent):
     name = "ReproductionAgent"
 
@@ -41,20 +65,17 @@ class ReproductionAgent(BaseAgent):
         out_dir = Path(state["output_dir"]) / "repro"
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        default_script = f"""from pathlib import Path
-import sys
-
-REPO_ROOT = Path(r"{Path(state['repo_path']).resolve()}").resolve()
-sys.path.insert(0, str(REPO_ROOT))
-
-from cache import CACHE
+        default_script = _ensure_bootstrap(
+            """from cache import CACHE
 from service import get_user_tier
 
 CACHE.clear()
 
 if __name__ == "__main__":
     print(get_user_tier("new_user_123"))
-"""
+""",
+            state["repo_path"],
+        )
 
         fallback = {
             "repro_strategy": "Force cache miss, call sync tier lookup, reproduce coroutine indexing failure.",
@@ -73,27 +94,27 @@ if __name__ == "__main__":
         )
 
         llm_script = _strip_code_fences(result.get("script_text", ""))
-        script_text = llm_script if llm_script else default_script
+        script_text = default_script if not llm_script else _ensure_bootstrap(llm_script, state["repo_path"])
 
         script_path = str((out_dir / "repro_case.py").resolve())
 
+        # First attempt: LLM-generated script wrapped with bootstrap
         write_result = write_repro_script(script_path, script_text)
         if not write_result["ok"]:
             self.trace("repro_invalid_llm_script", reason=write_result["summary"])
-
-            # hard fallback to deterministic script instead of stopping early
-            write_result = write_repro_script(script_path, default_script)
-            if not write_result["ok"]:
-                self.trace("agent_end", error=write_result["summary"])
-                return {
-                    "repro": {
-                        "error": write_result["summary"],
-                        "script_path": script_path,
-                        "expected_failure_signature": fallback["expected_failure_signature"],
-                    }
-                }
             script_text = default_script
             result = fallback
+            write_result = write_repro_script(script_path, script_text)
+
+        if not write_result["ok"]:
+            self.trace("agent_end", error=write_result["summary"])
+            return {
+                "repro": {
+                    "error": write_result["summary"],
+                    "script_path": script_path,
+                    "expected_failure_signature": fallback["expected_failure_signature"],
+                }
+            }
 
         exec_result = run_python_script(
             script_path=script_path,
@@ -101,6 +122,33 @@ if __name__ == "__main__":
             timeout_sec=self.ctx.settings.repro_timeout_sec,
         )
         validation = validate_repro_failure(exec_result, result["expected_failure_signature"])
+
+        # If the generated script fails for path/import reasons or still misses the signature,
+        # do one deterministic in-node fallback before giving control back to the graph.
+        stderr_text = exec_result.get("stderr", "") or ""
+        should_fallback = (
+            ("ModuleNotFoundError" in stderr_text)
+            or ("ImportError" in stderr_text)
+            or (validation.get("matched_expected_signature") is False)
+        )
+
+        if should_fallback and script_text != default_script:
+            self.trace(
+                "repro_retry_with_default",
+                reason="generated script failed import/bootstrap or missed target signature",
+                stderr=stderr_text,
+            )
+            result = fallback
+            script_text = default_script
+            write_result = write_repro_script(script_path, script_text)
+
+            if write_result["ok"]:
+                exec_result = run_python_script(
+                    script_path=script_path,
+                    cwd=state["output_dir"],
+                    timeout_sec=self.ctx.settings.repro_timeout_sec,
+                )
+                validation = validate_repro_failure(exec_result, result["expected_failure_signature"])
 
         repro = {
             "repro_strategy": result["repro_strategy"],

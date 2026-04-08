@@ -59,6 +59,14 @@ def build_graph(ctx: AgentContext):
         baseline = default_next_action(state)
         proposed = coordinator_agent.run(state, baseline)["coordinator_decision"]
         safe = enforce_policy(state, proposed)
+
+        ctx.tracer.event(
+            "policy_routed_action",
+            proposed_next_action=proposed.get("next_action"),
+            safe_next_action=safe.get("next_action"),
+            reason=safe.get("reason"),
+        )
+
         return {"coordinator_decision": safe}
 
     def finalize_node(state: InvestigationState):
