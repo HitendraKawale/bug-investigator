@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from bug_investigator.agents.base import BaseAgent
-from bug_investigator.tools.sandbox import run_python_script, validate_repro_failure, write_repro_script
+from bug_investigator.tools.sandbox import (
+    run_python_script,
+    validate_repro_failure,
+    write_repro_script,
+)
 
 
 REPRO_PROMPT = """
@@ -29,7 +33,7 @@ class ReproductionAgent(BaseAgent):
         default_script = f"""from pathlib import Path
 import sys
 
-REPO_ROOT = Path(r"{state['repo_path']}").resolve()
+REPO_ROOT = Path(r"{state["repo_path"]}").resolve()
 sys.path.insert(0, str(REPO_ROOT))
 
 from cache import CACHE
@@ -71,10 +75,12 @@ if __name__ == "__main__":
 
         exec_result = run_python_script(
             script_path=script_path,
-            cwd=state["repo_path"],
+            cwd=state["output_dir"],
             timeout_sec=self.ctx.settings.repro_timeout_sec,
         )
-        validation = validate_repro_failure(exec_result, result["expected_failure_signature"])
+        validation = validate_repro_failure(
+            exec_result, result["expected_failure_signature"]
+        )
 
         repro = {
             "repro_strategy": result["repro_strategy"],
