@@ -1,0 +1,23 @@
+2026-04-05 10:02:11 INFO deploy marker release=2026-04-05.3 service=profile-gateway
+2026-04-05 10:03:44 INFO request_id=ab12 user_id=u_991 endpoint=/tier cache_status=miss
+2026-04-05 10:03:44 WARNING profile fetch latency p95=842ms
+2026-04-05 10:03:44 ERROR request_id=ab12 tier lookup failed
+Traceback (most recent call last):
+  File "main.py", line 13, in handle_request
+    tier = get_user_tier(user_id)
+  File "service.py", line 10, in get_user_tier
+    return profile["tier"]
+TypeError: 'coroutine' object is not subscriptable
+2026-04-05 10:03:44 WARNING coroutine 'fetch_profile' was never awaited
+2026-04-05 10:04:03 INFO request_id=xy77 user_id=u_145 endpoint=/health status=200
+2026-04-05 10:04:10 WARNING Redis reconnect attempt=1
+2026-04-05 10:04:11 INFO request_id=cd33 user_id=u_104 endpoint=/tier cache_status=hit status=200
+2026-04-05 10:05:02 ERROR request_id=ef91 tier lookup failed
+Traceback (most recent call last):
+  File "main.py", line 13, in handle_request
+    tier = get_user_tier(user_id)
+  File "service.py", line 10, in get_user_tier
+    return profile["tier"]
+TypeError: 'coroutine' object is not subscriptable
+2026-04-05 10:05:05 WARNING metrics exporter timeout
+2026-04-05 10:05:07 INFO background sync completed in 1.2s

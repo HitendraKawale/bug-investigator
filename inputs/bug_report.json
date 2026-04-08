@@ -1,0 +1,16 @@
+{
+  "title": "Tier lookup fails for some users after April 5 deploy",
+  "service": "profile-gateway",
+  "expected_behavior": "Return billing tier string",
+  "actual_behavior": "Affected requests fail with HTTP 500",
+  "environment": {
+    "python": "3.11",
+    "deploy": "2026-04-05.3",
+    "cache_enabled": true
+  },
+  "hints": [
+    "More common for first-time users",
+    "Existing users often work on retry",
+    "Cache may be involved"
+  ]
+}
