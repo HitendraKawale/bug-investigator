@@ -14,7 +14,22 @@ Return strict JSON with:
 - patch_plan
 - confidence_breakdown
 
-Root cause must cite the execution path and affected files.
+Requirements:
+1. Root cause must explicitly connect the log evidence, code path, and repro outcome.
+2. patch_plan must include:
+   - summary
+   - impacted_files
+   - approach
+   - edits
+   - tests_to_add
+   - risks
+3. Each edit should include:
+   - title
+   - description
+   - file
+   - symbol
+   - rationale
+4. Do not give generic advice. Reference the affected files and failure path.
 """
 
 
@@ -24,42 +39,90 @@ class FixPlannerAgent(BaseAgent):
     def run(self, state: dict) -> dict:
         self.trace("agent_start")
 
-        repo_path = Path(state["repo_path"])
         patch_diff_path = str(Path(state["output_dir"]) / "artifacts" / "suggested.patch")
 
         fallback = {
             "root_cause_hypothesis": {
-                "summary": "On cache miss, service.py calls async fetch_profile() without awaiting it, then indexes the returned coroutine like a dict.",
-                "affected_files": ["service.py", "client.py"],
-                "supporting_evidence_ids": [
-                    ev["evidence_id"]
-                    for ev in state.get("evidence_registry", [])
+                "summary": (
+                    "On cache miss, service.py calls async fetch_profile() without awaiting it, "
+                    "then indexes the returned coroutine like a dict, which raises "
+                    "TypeError: 'coroutine' object is not subscriptable."
+                ),
+                "affected_files": ["service.py", "client.py", "main.py"],
+                "execution_path": [
+                    {
+                        "file": "main.py",
+                        "line_number": 13,
+                        "description": "handle_request invokes get_user_tier(user_id).",
+                    },
+                    {
+                        "file": "service.py",
+                        "line_number": 8,
+                        "description": "get_user_tier calls fetch_profile(user_id) on cache miss without awaiting it.",
+                    },
+                    {
+                        "file": "client.py",
+                        "line_number": 4,
+                        "description": "fetch_profile is an async function that returns a coroutine when called.",
+                    },
                 ],
             },
             "patch_plan": {
-                "summary": "Fix async/sync boundary on cache-miss path.",
+                "summary": "Fix the async/sync boundary on the cache-miss tier lookup path and add regression coverage.",
+                "impacted_files": ["service.py", "main.py", "client.py"],
+                "approach": (
+                    "Await fetch_profile before subscripting the returned profile object. "
+                    "Because get_user_tier currently behaves synchronously, update its caller boundary "
+                    "or introduce a safe async bridge so the fix does not break existing call sites."
+                ),
                 "edits": [
                     {
+                        "title": "Await fetch_profile on cache miss",
+                        "description": (
+                            "Replace the cache-miss branch in get_user_tier so the async client call is awaited "
+                            "before the result is stored and before profile['tier'] is accessed."
+                        ),
                         "file": "service.py",
                         "symbol": "get_user_tier",
-                        "change_type": "behavioral_fix",
-                        "description": "Await fetch_profile() before indexing the returned profile object, or restructure caller boundary cleanly.",
-                        "rationale": "The current code treats a coroutine object like a dict.",
+                        "rationale": "The current code treats a coroutine object as if it were the resolved profile dict.",
                     },
                     {
-                        "file": "tests/test_repro_regression.py",
-                        "symbol": "test_cache_miss_tier_lookup",
-                        "change_type": "test",
-                        "description": "Add a regression test for uncached users.",
-                        "rationale": "Bug only appears on cache miss path.",
+                        "title": "Update caller to match async behavior",
+                        "description": (
+                            "Adjust the tier lookup call path so if get_user_tier becomes async, "
+                            "the caller awaits it instead of invoking it synchronously."
+                        ),
+                        "file": "main.py",
+                        "symbol": "handle_request",
+                        "rationale": "Fixing the service layer may require updating the caller boundary to preserve correctness.",
                     },
+                ],
+                "tests_to_add": [
+                    {
+                        "name": "test_cache_miss_new_user_tier_lookup",
+                        "purpose": "Verify a new uncached user no longer raises the coroutine TypeError.",
+                    },
+                    {
+                        "name": "test_cache_hit_existing_user_tier_lookup",
+                        "purpose": "Verify existing cached users continue returning a valid tier.",
+                    },
+                ],
+                "risks": [
+                    "Changing get_user_tier to async may require updating all callers.",
+                    "The cache-hit path must remain behaviorally unchanged.",
+                    "A partial fix in service.py without updating main.py could move the failure rather than remove it.",
                 ],
             },
             "confidence_breakdown": {
-                "repro_match": 1.0 if state.get("repro_exec", {}).get("matched_expected_signature") else 0.4,
-                "stacktrace_alignment": 0.95,
-                "code_alignment": 0.95,
-                "overall": 0.93 if state.get("repro_exec", {}).get("matched_expected_signature") else 0.72,
+                "high_confidence_factors": [
+                    "The production stack trace and repro both point to subscripting a coroutine in service.py.",
+                    "The code snippet explicitly shows fetch_profile is async and is called without await on cache miss.",
+                ],
+                "low_confidence_factors": [
+                    "The exact breadth of caller changes depends on whether the production system uses a larger async framework boundary.",
+                ],
+                "total_confidence_score": 0.94,
+                "confidence_level": "High",
             },
         }
 

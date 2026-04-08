@@ -20,6 +20,8 @@ from bug_investigator.orchestration.policy import (
     route_from_decision,
 )
 from bug_investigator.report_normalization import (
+    build_bug_summary,
+    build_open_questions,
     build_run_summary,
     build_validation_plan,
     normalize_log_analysis,
@@ -89,7 +91,7 @@ def build_graph(ctx: AgentContext):
             raw_fix_plan,
             state.get("evidence_registry", []),
         )
-        normalized_patch_plan = normalize_patch_plan(raw_patch_plan)
+        normalized_patch_plan = normalize_patch_plan(raw_patch_plan, normalized_root_cause)
 
         normalized_reproduction = {
             **(state.get("repro") or {}),
@@ -107,6 +109,17 @@ def build_graph(ctx: AgentContext):
             normalized_reproduction,
             state.get("review"),
             normalized_patch_plan,
+        )
+
+        normalized_bug_summary = build_bug_summary(
+            normalized_triage,
+            normalized_log_analysis,
+            normalized_reproduction,
+        )
+
+        normalized_open_questions = build_open_questions(
+            state.get("open_questions", []),
+            normalized_triage,
         )
 
         review = state.get("review") or {}
@@ -127,9 +140,12 @@ def build_graph(ctx: AgentContext):
             input_artifacts={
                 "bug_report_path": state["bug_report_path"],
                 "log_path": state["log_path"],
-                "repo_path": state["repo_path"],
+                "repo_input": state.get("repo_input", state["repo_path"]),
+                "resolved_repo_path": state["repo_path"],
+                "repo_source": state.get("repo_source", "local_path"),
             },
             run_summary=normalized_run_summary,
+            bug_summary=normalized_bug_summary,
             triage_summary=normalized_triage,
             log_analysis=normalized_log_analysis,
             repo_context=state.get("repo_context"),
@@ -139,7 +155,7 @@ def build_graph(ctx: AgentContext):
             validation_plan=normalized_validation_plan,
             review_verdict=state.get("review"),
             evidence=state.get("evidence_registry", []),
-            open_questions=state.get("open_questions", []),
+            open_questions=normalized_open_questions,
             trace_artifacts={
                 "trace_jsonl_path": state.get("trace_path", ""),
                 "patch_diff_path": state.get("patch_diff_path", ""),

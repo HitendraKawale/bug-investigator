@@ -1,4 +1,6 @@
 from bug_investigator.report_normalization import (
+    build_bug_summary,
+    build_open_questions,
     build_run_summary,
     build_validation_plan,
     normalize_log_analysis,
@@ -28,10 +30,13 @@ def test_normalize_patch_plan_from_steps():
             {"step": "await fetch_profile", "description": "fix async bug"}
         ]
     }
-    out = normalize_patch_plan(patch_plan)
+    root_cause = {"affected_files": ["service.py", "client.py"]}
+    out = normalize_patch_plan(patch_plan, root_cause)
     assert "edits" in out
     assert out["edits"][0]["title"] == "await fetch_profile"
     assert out["edits"][0]["description"] == "fix async bug"
+    assert out["impacted_files"] == ["service.py", "client.py"]
+    assert len(out["risks"]) >= 1
 
 
 def test_normalize_patch_plan_from_single_dict_shape():
@@ -41,7 +46,7 @@ def test_normalize_patch_plan_from_single_dict_shape():
         "file": "service.py",
         "symbol": "get_user_tier",
     }
-    out = normalize_patch_plan(patch_plan)
+    out = normalize_patch_plan(patch_plan, {"affected_files": ["service.py"]})
     assert len(out["edits"]) == 1
     assert out["edits"][0]["title"] == "await fetch_profile(user_id)"
     assert out["edits"][0]["file"] == "service.py"
@@ -49,7 +54,7 @@ def test_normalize_patch_plan_from_single_dict_shape():
 
 def test_normalize_patch_plan_from_list_of_strings():
     patch_plan = ["await fetch_profile(user_id)", "add regression test"]
-    out = normalize_patch_plan(patch_plan)
+    out = normalize_patch_plan(patch_plan, {"affected_files": ["service.py"]})
     assert len(out["edits"]) == 2
     assert out["edits"][0]["title"] == "await fetch_profile(user_id)"
 
@@ -111,3 +116,21 @@ def test_normalize_log_analysis_deploy_dict_to_list():
     out = normalize_log_analysis(log_analysis)
     assert isinstance(out["deploy_correlation"], list)
     assert out["stack_traces"][0]["exception_type"] == "TypeError"
+
+
+def test_build_bug_summary_high_severity():
+    triage = {
+        "actual_behavior": "Returns HTTP 500 for affected new users",
+        "problem_statement": "Tier lookup fails for new users",
+    }
+    reproduction = {"execution": {"natural_failure": True}}
+    out = build_bug_summary(triage, None, reproduction)
+    assert out["severity"] == "high"
+    assert "HTTP 500" in out["severity_reason"]
+
+
+def test_build_open_questions_from_unknowns():
+    triage = {"unknowns": ["Does cache involvement affect the issue?"]}
+    out = build_open_questions([], triage)
+    assert len(out) == 1
+    assert out[0]["blocking"] is False

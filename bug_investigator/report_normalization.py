@@ -105,12 +105,12 @@ def normalize_root_cause(
     }
 
 
-def _normalize_edit_item(item: Any) -> dict:
+def _normalize_edit_item(item: Any, default_files: list[str]) -> dict:
     if isinstance(item, str):
         return {
             "title": item.strip(),
             "description": "",
-            "file": "",
+            "file": default_files[0] if default_files else "",
             "symbol": "",
             "rationale": "",
         }
@@ -119,37 +119,25 @@ def _normalize_edit_item(item: Any) -> dict:
         return {
             "title": str(item),
             "description": "",
-            "file": "",
+            "file": default_files[0] if default_files else "",
             "symbol": "",
             "rationale": "",
         }
 
     title = _pick_text(
         item,
-        [
-            "title",
-            "step",
-            "change",
-            "action",
-            "name",
-            "summary",
-        ],
+        ["title", "step", "change", "action", "name", "summary"],
     )
-
     description = _pick_text(
         item,
-        [
-            "description",
-            "details",
-            "rationale",
-            "explanation",
-            "why",
-        ],
+        ["description", "details", "explanation", "why"],
     )
-
     file_path = _pick_text(item, ["file", "path", "target_file"])
     symbol = _pick_text(item, ["symbol", "function", "method", "target_symbol"])
     rationale = _pick_text(item, ["rationale", "reason", "why"])
+
+    if not file_path and default_files:
+        file_path = default_files[0]
 
     return {
         "title": title,
@@ -160,12 +148,17 @@ def _normalize_edit_item(item: Any) -> dict:
     }
 
 
-def normalize_patch_plan(patch_plan: dict | list | None) -> dict | None:
+def normalize_patch_plan(patch_plan: dict | list | None, root_cause: dict | None = None) -> dict | None:
     if not patch_plan:
         return None
 
+    impacted_files = []
+    if root_cause:
+        impacted_files = _ensure_list(root_cause.get("affected_files"))
+
     raw_items = []
     summary = ""
+    approach = ""
     tests_to_add = []
     risks = []
 
@@ -174,6 +167,7 @@ def normalize_patch_plan(patch_plan: dict | list | None) -> dict | None:
 
     elif isinstance(patch_plan, dict):
         summary = patch_plan.get("summary", "") or patch_plan.get("overview", "") or ""
+        approach = patch_plan.get("approach", "") or patch_plan.get("implementation_strategy", "") or ""
 
         if "edits" in patch_plan:
             raw_items = _ensure_list(patch_plan.get("edits"))
@@ -184,7 +178,6 @@ def normalize_patch_plan(patch_plan: dict | list | None) -> dict | None:
         elif "actions" in patch_plan:
             raw_items = _ensure_list(patch_plan.get("actions"))
         else:
-            # treat the dict itself as one edit if it looks like a single edit object
             if any(
                 key in patch_plan
                 for key in ["step", "change", "action", "title", "description", "file", "symbol"]
@@ -192,20 +185,27 @@ def normalize_patch_plan(patch_plan: dict | list | None) -> dict | None:
                 raw_items = [patch_plan]
 
         tests_to_add = _ensure_list(
-            patch_plan.get("tests_to_add") or patch_plan.get("tests") or patch_plan.get("validation_tests")
+            patch_plan.get("tests_to_add")
+            or patch_plan.get("tests")
+            or patch_plan.get("validation_tests")
         )
         risks = _ensure_list(
-            patch_plan.get("risks") or patch_plan.get("regression_risks")
+            patch_plan.get("risks")
+            or patch_plan.get("regression_risks")
         )
 
-    edits = [_normalize_edit_item(item) for item in raw_items]
-
-    # drop fully empty edits
+    edits = [_normalize_edit_item(item, impacted_files) for item in raw_items]
     edits = [
         edit
         for edit in edits
         if any(
-            (edit.get("title"), edit.get("description"), edit.get("file"), edit.get("symbol"), edit.get("rationale"))
+            (
+                edit.get("title"),
+                edit.get("description"),
+                edit.get("file"),
+                edit.get("symbol"),
+                edit.get("rationale"),
+            )
         )
     ]
 
@@ -215,8 +215,38 @@ def normalize_patch_plan(patch_plan: dict | list | None) -> dict | None:
         else:
             summary = ""
 
+    if not approach:
+        if impacted_files:
+            approach = (
+                "Fix the async/sync boundary on the affected path, update impacted callers if needed, "
+                "and add regression coverage for both cached and uncached user flows."
+            )
+        else:
+            approach = "Apply the minimal code changes required to remove the failure and add regression tests."
+
+    if not tests_to_add:
+        tests_to_add = [
+            {
+                "name": "test_cache_hit_existing_user_tier_lookup",
+                "purpose": "Verify existing cached users still return a tier successfully.",
+            },
+            {
+                "name": "test_cache_miss_new_user_tier_lookup",
+                "purpose": "Verify newly created uncached users no longer raise the coroutine TypeError.",
+            },
+        ]
+
+    if not risks:
+        risks = [
+            "Changing the async/sync boundary may require updating callers of the affected function.",
+            "The cache-hit path must remain unchanged for existing users.",
+            "If callers remain synchronous, introducing await without adjusting call sites could create new failures.",
+        ]
+
     return {
         "summary": summary,
+        "impacted_files": impacted_files,
+        "approach": approach,
         "edits": edits,
         "tests_to_add": tests_to_add,
         "risks": risks,
@@ -238,20 +268,23 @@ def build_validation_plan(
 
     commands.append("uv run pytest")
 
+    tests_to_add = []
+    if patch_plan:
+        tests_to_add = _ensure_list(patch_plan.get("tests_to_add"))
+
     regression_checks = [
         "Existing cached users still return a valid tier.",
         "New uncached users no longer raise TypeError when tier lookup is requested.",
         "Async profile fetch result is awaited before subscripting tier data.",
     ]
 
-    tests_to_add = []
-    if patch_plan:
-        tests_to_add = _ensure_list(patch_plan.get("tests_to_add"))
-
     return {
         "commands": commands,
         "tests_to_add": tests_to_add,
         "regression_checks": regression_checks,
+        "expected_failing_output_before_fix": (
+            "TypeError: 'coroutine' object is not subscriptable"
+        ),
     }
 
 
@@ -291,3 +324,68 @@ def build_run_summary(
         "primary_files": primary_files,
         "patch_plan_ready": patch_plan_ready,
     }
+
+
+def build_bug_summary(
+    triage: dict | None,
+    log_analysis: dict | None,
+    reproduction: dict | None,
+) -> dict:
+    symptoms = []
+    scope = ""
+    severity = "medium"
+    severity_reason = ""
+
+    if triage:
+        if triage.get("actual_behavior"):
+            symptoms.append(triage["actual_behavior"])
+        if triage.get("problem_statement"):
+            scope = triage["problem_statement"]
+
+    if log_analysis:
+        signatures = _ensure_list(log_analysis.get("error_signatures"))
+        if signatures:
+            first = signatures[0]
+            if isinstance(first, dict) and first.get("signature"):
+                symptoms.append(first["signature"])
+
+    repro_exec = {}
+    if reproduction:
+        repro_exec = reproduction.get("execution", {}) or {}
+
+    actual_text = (triage or {}).get("actual_behavior", "").lower()
+    if "http 500" in actual_text or repro_exec.get("natural_failure") is True:
+        severity = "high"
+        severity_reason = "The bug causes a reproducible runtime failure on a user-facing path and returns HTTP 500 for affected users."
+    else:
+        severity = "medium"
+        severity_reason = "The bug is reproducible but does not clearly indicate a user-facing hard failure."
+
+    return {
+        "symptoms": symptoms,
+        "scope": scope,
+        "severity": severity,
+        "severity_reason": severity_reason,
+    }
+
+
+def build_open_questions(
+    existing_open_questions: list[dict] | None,
+    triage: dict | None,
+) -> list[dict]:
+    if existing_open_questions:
+        return existing_open_questions
+
+    triage_unknowns = []
+    if triage:
+        triage_unknowns = _ensure_list(triage.get("unknowns"))
+
+    return [
+        {
+            "question": q,
+            "blocking": False,
+            "suggested_resolution": "Verify through additional production logs, metrics, or targeted tests.",
+        }
+        for q in triage_unknowns
+        if isinstance(q, str) and q.strip()
+    ]

@@ -25,7 +25,9 @@ class FinalReport(BaseModel):
     run_id: str
     status: str
     input_artifacts: dict
+
     run_summary: dict = Field(default_factory=dict)
+    bug_summary: dict | None = None
 
     triage_summary: dict | None = None
     log_analysis: dict | None = None

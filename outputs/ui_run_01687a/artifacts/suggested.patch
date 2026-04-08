@@ -1,0 +1,11 @@
+--- a/service.py
++++ b/service.py
+@@
+-def get_user_tier(user_id: str) -> str:
++async def get_user_tier(user_id: str) -> str:
+     profile = CACHE.get(user_id)
+     if profile is None:
+-        profile = fetch_profile(user_id)
++        profile = await fetch_profile(user_id)
+         CACHE[user_id] = profile
+     return profile["tier"]
