@@ -6,3 +6,5 @@ __pycache__/
 *.pyd
 .env
 outputs/run_*/
+.egg-info/*
+.egg-info/
