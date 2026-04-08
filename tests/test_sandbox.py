@@ -27,8 +27,11 @@ def test_write_and_run_script(tmp_path: Path):
 
 def test_validate_repro_failure():
     result = {
+        "exit_code": 1,
         "stdout": "",
         "stderr": "TypeError: boom",
     }
     verdict = validate_repro_failure(result, "TypeError")
     assert verdict["matched_expected_signature"] is True
+    assert verdict["natural_failure"] is True
+    assert verdict["match_mode"] == "natural_failure"
