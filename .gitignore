@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual envs
+.venv/
+venv/
+.env
+.env.*
+
+# Test / coverage / tooling
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# macOS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Streamlit local state
+.streamlit/secrets.toml
+
+# Generated outputs
+outputs/*
+!outputs/.gitkeep
+
+# Generated run artifacts anywhere
+**/trace.jsonl
+**/investigation_report.json
+**/suggested.patch
+**/repro_case.py
+
+# Temporary cloned repos from URL mode
+**/_resolved_repo/
+
+# Logs / misc local artifacts
+*.log
