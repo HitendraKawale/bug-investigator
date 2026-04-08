@@ -19,28 +19,16 @@ from bug_investigator.orchestration.policy import (
     enforce_policy,
     route_from_decision,
 )
+from bug_investigator.report_normalization import (
+    build_run_summary,
+    build_validation_plan,
+    normalize_log_analysis,
+    normalize_patch_plan,
+    normalize_root_cause,
+    normalize_triage_summary,
+)
 from bug_investigator.schemas import FinalReport
 from bug_investigator.state import InvestigationState
-
-
-def _normalize_patch_plan(value):
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, list):
-        return {"steps": value}
-    return {"raw": value}
-
-
-def _normalize_root_cause(value):
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, list):
-        return {"items": value}
-    return {"raw": value}
 
 
 def build_graph(ctx: AgentContext):
@@ -90,16 +78,39 @@ def build_graph(ctx: AgentContext):
         return {"coordinator_decision": safe}
 
     def finalize_node(state: InvestigationState):
+        raw_fix_plan = state.get("fix_plan") or {}
+        raw_root_cause = raw_fix_plan.get("root_cause_hypothesis")
+        raw_patch_plan = raw_fix_plan.get("patch_plan")
+
+        normalized_triage = normalize_triage_summary(state.get("triage"))
+        normalized_log_analysis = normalize_log_analysis(state.get("log_analysis"))
+        normalized_root_cause = normalize_root_cause(
+            raw_root_cause,
+            raw_fix_plan,
+            state.get("evidence_registry", []),
+        )
+        normalized_patch_plan = normalize_patch_plan(raw_patch_plan)
+
+        normalized_reproduction = {
+            **(state.get("repro") or {}),
+            **({"execution": state.get("repro_exec")} if state.get("repro_exec") else {}),
+        }
+
+        normalized_validation_plan = build_validation_plan(
+            normalized_reproduction,
+            normalized_patch_plan,
+        )
+
+        normalized_run_summary = build_run_summary(
+            normalized_triage,
+            normalized_root_cause,
+            normalized_reproduction,
+            state.get("review"),
+            normalized_patch_plan,
+        )
+
         review = state.get("review") or {}
         repro_exec = state.get("repro_exec") or {}
-        fix_plan = state.get("fix_plan") or {}
-
-        normalized_root_cause = _normalize_root_cause(
-            fix_plan.get("root_cause_hypothesis")
-        )
-        normalized_patch_plan = _normalize_patch_plan(
-            fix_plan.get("patch_plan")
-        )
 
         completed = (
             review.get("approved") is True
@@ -118,15 +129,14 @@ def build_graph(ctx: AgentContext):
                 "log_path": state["log_path"],
                 "repo_path": state["repo_path"],
             },
-            triage_summary=state.get("triage"),
-            log_analysis=state.get("log_analysis"),
+            run_summary=normalized_run_summary,
+            triage_summary=normalized_triage,
+            log_analysis=normalized_log_analysis,
             repo_context=state.get("repo_context"),
-            reproduction={
-                **(state.get("repro") or {}),
-                **({"execution": state.get("repro_exec")} if state.get("repro_exec") else {}),
-            },
+            reproduction=normalized_reproduction,
             root_cause=normalized_root_cause,
             patch_plan=normalized_patch_plan,
+            validation_plan=normalized_validation_plan,
             review_verdict=state.get("review"),
             evidence=state.get("evidence_registry", []),
             open_questions=state.get("open_questions", []),
