@@ -12,8 +12,21 @@ Return strict JSON with:
 - criticisms
 - required_revisions
 
+Allowed verdict values only:
+- approve
+- revise_repro
+- revise_fix_plan
+- halt_partial
+
 Reject unsupported claims.
 """
+
+
+def _normalize_verdict(verdict: str | None) -> str:
+    allowed = {"approve", "revise_repro", "revise_fix_plan", "halt_partial"}
+    if verdict in allowed:
+        return verdict
+    return "halt_partial"
 
 
 class ReviewerAgent(BaseAgent):
@@ -71,6 +84,10 @@ class ReviewerAgent(BaseAgent):
             },
             fallback,
         )
+
+        result["verdict"] = _normalize_verdict(result.get("verdict"))
+        if result["verdict"] != "approve":
+            result["approved"] = False
 
         self.trace("agent_end", verdict=result.get("verdict"))
         return {"review": result}

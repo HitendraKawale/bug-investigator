@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 
-def _bump_retry(state: dict, key: str) -> dict[str, int]:
-    retries = dict(state.get("retry_counts", {}))
-    retries[key] = retries.get(key, 0) + 1
-    return retries
-
-
 def default_next_action(state: dict) -> dict:
+    max_retries = state.get("_max_retries", 2)
+    repro_tries = state.get("retry_counts", {}).get("reproduction", 0)
+
     if not state.get("log_analysis"):
         return {
             "next_action": "run_log_analyst",
@@ -26,7 +23,16 @@ def default_next_action(state: dict) -> dict:
             "confidence": 0.9,
         }
 
+    # repro missing entirely
     if not state.get("repro_exec"):
+        if repro_tries >= max_retries:
+            return {
+                "next_action": "halt_partial",
+                "reason": "Repro could not be produced successfully after retries.",
+                "required_inputs_present": True,
+                "blocking_gaps": ["validated repro"],
+                "confidence": 0.8,
+            }
         return {
             "next_action": "run_reproduction",
             "reason": "Need a deterministic repro before patch planning.",
@@ -35,22 +41,22 @@ def default_next_action(state: dict) -> dict:
             "confidence": 0.9,
         }
 
+    # repro exists but did not match
     if not state.get("repro_exec", {}).get("matched_expected_signature"):
-        tries = state.get("retry_counts", {}).get("reproduction", 0)
-        if tries < state.get("_max_retries", 2):
+        if repro_tries >= max_retries:
             return {
-                "next_action": "run_reproduction",
-                "reason": "Repro did not yet match the expected failure signature.",
+                "next_action": "halt_partial",
+                "reason": "Repro did not match expected failure signature after retries.",
                 "required_inputs_present": True,
-                "blocking_gaps": [],
+                "blocking_gaps": ["validated repro"],
                 "confidence": 0.8,
             }
         return {
-            "next_action": "halt_partial",
-            "reason": "Repro could not be validated after retries.",
+            "next_action": "run_reproduction",
+            "reason": "Repro did not yet match the expected failure signature.",
             "required_inputs_present": True,
-            "blocking_gaps": ["validated repro"],
-            "confidence": 0.7,
+            "blocking_gaps": [],
+            "confidence": 0.8,
         }
 
     if not state.get("fix_plan"):
@@ -73,7 +79,7 @@ def default_next_action(state: dict) -> dict:
         }
 
     verdict = review.get("verdict")
-    if verdict == "approve":
+    if verdict == "approve" and review.get("approved") is True:
         return {
             "next_action": "finalize",
             "reason": "Review approved the investigation.",
@@ -83,21 +89,20 @@ def default_next_action(state: dict) -> dict:
         }
 
     if verdict == "revise_repro":
-        tries = state.get("retry_counts", {}).get("reproduction", 0)
-        if tries < state.get("_max_retries", 2):
+        if repro_tries >= max_retries:
             return {
-                "next_action": "run_reproduction",
-                "reason": "Reviewer requested repro revision.",
+                "next_action": "halt_partial",
+                "reason": "Reviewer requested repro revision but retries are exhausted.",
                 "required_inputs_present": True,
-                "blocking_gaps": [],
+                "blocking_gaps": ["validated repro"],
                 "confidence": 0.8,
             }
         return {
-            "next_action": "halt_partial",
-            "reason": "Reviewer requested repro revision but retries are exhausted.",
+            "next_action": "run_reproduction",
+            "reason": "Reviewer requested repro revision.",
             "required_inputs_present": True,
-            "blocking_gaps": ["validated repro"],
-            "confidence": 0.7,
+            "blocking_gaps": [],
+            "confidence": 0.8,
         }
 
     if verdict == "revise_fix_plan":
@@ -114,7 +119,7 @@ def default_next_action(state: dict) -> dict:
         "reason": "No safe path forward.",
         "required_inputs_present": True,
         "blocking_gaps": [],
-        "confidence": 0.5,
+        "confidence": 0.6,
     }
 
 
@@ -128,11 +133,26 @@ def enforce_policy(state: dict, proposed: dict) -> dict:
         "finalize",
         "halt_partial",
     }
+
     if proposed.get("next_action") not in allowed:
         return default_next_action(state)
 
-    if proposed["next_action"] == "finalize" and not state.get("review"):
+    # cannot review before a grounded fix plan exists
+    if proposed["next_action"] == "run_reviewer" and not state.get("fix_plan"):
         return default_next_action(state)
+
+    # cannot finalize unless review approved and repro matched
+    if proposed["next_action"] == "finalize":
+        review = state.get("review")
+        repro_exec = state.get("repro_exec", {})
+        if not review:
+            return default_next_action(state)
+        if review.get("approved") is not True or review.get("verdict") != "approve":
+            return default_next_action(state)
+        if not repro_exec.get("matched_expected_signature"):
+            return default_next_action(state)
+        if not state.get("fix_plan"):
+            return default_next_action(state)
 
     return proposed
 

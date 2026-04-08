@@ -62,9 +62,18 @@ def build_graph(ctx: AgentContext):
         return {"coordinator_decision": safe}
 
     def finalize_node(state: InvestigationState):
-        status = "completed"
-        if state.get("coordinator_decision", {}).get("next_action") == "halt_partial":
-            status = "partial"
+        review = state.get("review") or {}
+        repro_exec = state.get("repro_exec") or {}
+        fix_plan = state.get("fix_plan") or {}
+
+        completed = (
+            review.get("approved") is True
+            and review.get("verdict") == "approve"
+            and repro_exec.get("matched_expected_signature") is True
+            and bool(fix_plan)
+        )
+
+        status = "completed" if completed else "partial"
 
         report = FinalReport(
             run_id=state["run_id"],
