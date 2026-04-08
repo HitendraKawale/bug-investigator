@@ -37,11 +37,7 @@ def validate_generated_script(script_text: str) -> dict:
 def write_repro_script(output_path: str, script_text: str) -> dict:
     verdict = validate_generated_script(script_text)
     if not verdict["ok"]:
-        return {
-            "ok": False,
-            "tool_name": "write_repro_script",
-            "summary": verdict["reason"],
-        }
+        return {"ok": False, "tool_name": "write_repro_script", "summary": verdict["reason"]}
 
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -83,14 +79,35 @@ def run_python_script(
 
 
 def validate_repro_failure(execution_result: dict, expected_signature: str) -> dict:
-    haystack = (
-        f"{execution_result.get('stdout', '')}\n{execution_result.get('stderr', '')}"
-    )
-    matched = expected_signature in haystack
+    stdout = execution_result.get("stdout", "") or ""
+    stderr = execution_result.get("stderr", "") or ""
+    exit_code = execution_result.get("exit_code", 0)
+
+    stderr_match = expected_signature in stderr
+    stdout_match = expected_signature in stdout
+
+    natural_failure = exit_code != 0 and stderr_match
+    assisted_match = stdout_match and exit_code == 0
+
+    matched = natural_failure or assisted_match
+
+    if natural_failure:
+        match_mode = "natural_failure"
+    elif assisted_match:
+        match_mode = "assisted_stdout_match"
+    elif stderr_match:
+        match_mode = "stderr_signature_but_zero_exit"
+    elif stdout_match:
+        match_mode = "stdout_signature_only"
+    else:
+        match_mode = "no_match"
+
     return {
         "ok": True,
         "tool_name": "validate_repro_failure",
-        "summary": f"matched_expected_signature={matched}",
+        "summary": f"matched_expected_signature={matched}; match_mode={match_mode}",
         "matched_expected_signature": matched,
         "expected_signature": expected_signature,
+        "natural_failure": natural_failure,
+        "match_mode": match_mode,
     }

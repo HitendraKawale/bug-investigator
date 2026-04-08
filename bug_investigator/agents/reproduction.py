@@ -16,8 +16,13 @@ Return strict JSON with:
 - expected_failure_signature
 
 Create the smallest deterministic Python repro.
-Only return Python code in script_text. Do not include markdown fences.
-Assume the repo path bootstrap will be injected automatically.
+
+Rules:
+- The script must fail naturally with a non-zero exit code.
+- Do not catch or suppress the target exception.
+- Do not use markdown fences.
+- Do not import imaginary helper modules such as bootstrap.
+- Assume repo path bootstrap will be injected automatically.
 """
 
 
@@ -50,11 +55,22 @@ def _ensure_bootstrap(script_text: str, repo_path: str) -> str:
     header = _bootstrap_header(repo_path)
     text = script_text.lstrip()
 
-    # If model already inserted equivalent bootstrap, keep as-is.
     if "sys.path.insert(0" in text or "REPO_ROOT" in text:
         return text
 
     return header + text
+
+
+def _looks_suspicious(script_text: str) -> bool:
+    bad_patterns = [
+        "from bootstrap import",
+        "try:",
+        "except TypeError",
+        "except Exception",
+        "traceback.print_exc()",
+    ]
+    lowered = script_text.lower()
+    return any(p.lower() in lowered for p in bad_patterns)
 
 
 class ReproductionAgent(BaseAgent):
@@ -78,7 +94,7 @@ if __name__ == "__main__":
         )
 
         fallback = {
-            "repro_strategy": "Force cache miss, call sync tier lookup, reproduce coroutine indexing failure.",
+            "repro_strategy": "Force cache miss, call sync tier lookup, reproduce coroutine indexing failure with a natural non-zero failure.",
             "script_text": default_script,
             "expected_failure_signature": "TypeError: 'coroutine' object is not subscriptable",
         }
@@ -96,9 +112,13 @@ if __name__ == "__main__":
         llm_script = _strip_code_fences(result.get("script_text", ""))
         script_text = default_script if not llm_script else _ensure_bootstrap(llm_script, state["repo_path"])
 
+        if _looks_suspicious(script_text):
+            self.trace("repro_suspicious_llm_script", reason="caught-exception or imaginary bootstrap pattern detected")
+            script_text = default_script
+            result = fallback
+
         script_path = str((out_dir / "repro_case.py").resolve())
 
-        # First attempt: LLM-generated script wrapped with bootstrap
         write_result = write_repro_script(script_path, script_text)
         if not write_result["ok"]:
             self.trace("repro_invalid_llm_script", reason=write_result["summary"])
@@ -123,20 +143,19 @@ if __name__ == "__main__":
         )
         validation = validate_repro_failure(exec_result, result["expected_failure_signature"])
 
-        # If the generated script fails for path/import reasons or still misses the signature,
-        # do one deterministic in-node fallback before giving control back to the graph.
-        stderr_text = exec_result.get("stderr", "") or ""
         should_fallback = (
-            ("ModuleNotFoundError" in stderr_text)
-            or ("ImportError" in stderr_text)
-            or (validation.get("matched_expected_signature") is False)
+            ("ModuleNotFoundError" in (exec_result.get("stderr", "") or ""))
+            or ("ImportError" in (exec_result.get("stderr", "") or ""))
+            or (validation.get("natural_failure") is not True)
         )
 
         if should_fallback and script_text != default_script:
             self.trace(
                 "repro_retry_with_default",
-                reason="generated script failed import/bootstrap or missed target signature",
-                stderr=stderr_text,
+                reason="generated script failed import/bootstrap or did not fail naturally with expected signature",
+                stderr=exec_result.get("stderr", ""),
+                stdout=exec_result.get("stdout", ""),
+                match_mode=validation.get("match_mode"),
             )
             result = fallback
             script_text = default_script
@@ -168,6 +187,8 @@ if __name__ == "__main__":
             script_path=script_path,
             exit_code=exec_result.get("exit_code"),
             matched_expected_signature=validation.get("matched_expected_signature"),
+            natural_failure=validation.get("natural_failure"),
+            match_mode=validation.get("match_mode"),
             stderr=exec_result.get("stderr", ""),
         )
         return {
