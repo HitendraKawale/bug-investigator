@@ -37,7 +37,11 @@ def validate_generated_script(script_text: str) -> dict:
 def write_repro_script(output_path: str, script_text: str) -> dict:
     verdict = validate_generated_script(script_text)
     if not verdict["ok"]:
-        return {"ok": False, "tool_name": "write_repro_script", "summary": verdict["reason"]}
+        return {
+            "ok": False,
+            "tool_name": "write_repro_script",
+            "summary": verdict["reason"],
+        }
 
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -56,9 +60,12 @@ def run_python_script(
     timeout_sec: int = 8,
     env: dict | None = None,
 ) -> dict:
+    abs_script_path = str(Path(script_path).resolve())
+    abs_cwd = str(Path(cwd).resolve())
+
     proc = subprocess.run(
-        [sys.executable, script_path],
-        cwd=cwd,
+        [sys.executable, abs_script_path],
+        cwd=abs_cwd,
         env=env,
         text=True,
         capture_output=True,
@@ -76,7 +83,9 @@ def run_python_script(
 
 
 def validate_repro_failure(execution_result: dict, expected_signature: str) -> dict:
-    haystack = f'{execution_result.get("stdout", "")}\n{execution_result.get("stderr", "")}'
+    haystack = (
+        f"{execution_result.get('stdout', '')}\n{execution_result.get('stderr', '')}"
+    )
     matched = expected_signature in haystack
     return {
         "ok": True,
